@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Admin Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;background:#0a0a0a;font-family:sans-serif;overflow:hidden;touch-action:none}
+#wrap{position:relative;width:100%;height:100%;display:flex;flex-direction:column}
+#screen-wrap{position:relative;flex:1;overflow:hidden;cursor:crosshair}
+#s{width:100%;height:100%;object-fit:contain;display:block;pointer-events:none;user-select:none}
+#overlay{position:absolute;inset:0;cursor:crosshair;touch-action:none}
+#hud{position:fixed;top:0;left:0;right:0;height:36px;
+     background:rgba(0,0,0,.82);display:flex;align-items:center;gap:8px;
+     padding:0 10px;z-index:100;border-bottom:1px solid #222}
+.hbadge{color:#0f0;font-size:11px;background:rgba(0,255,0,.08);
+        padding:2px 8px;border-radius:8px;white-space:nowrap}
+.hbadge.red{color:#f55;background:rgba(255,80,80,.1)}
+.hbadge.yellow{color:#ff0;background:rgba(255,255,0,.08)}
+.spacer{flex:1}
+#toolbar{height:44px;background:#111;border-top:1px solid #222;
+         display:flex;align-items:center;gap:6px;padding:0 8px;
+         overflow-x:auto;flex-shrink:0}
+.tbtn{background:#1e293b;color:#cbd5e1;border:1px solid #334155;
+      border-radius:6px;padding:5px 10px;cursor:pointer;font-size:12px;
+      white-space:nowrap;transition:background .15s}
+.tbtn:hover{background:#334155}
+.tbtn.active{background:#1d4ed8;border-color:#3b82f6;color:#fff}
+#typebox{flex:1;min-width:80px;background:#0f172a;color:#fff;
+         border:1px solid #334155;border-radius:6px;padding:5px 8px;
+         font-size:13px;outline:none}
+#typebox:focus{border-color:#3b82f6}
+</style>
+</head><body>
+<div id="hud">
+  <span class="hbadge">🔴 ADMIN CONTROL</span>
+  <span class="hbadge yellow" id="mode-badge">🖱 Mouse</span>
+  <span class="hbadge" id="pos-badge">x:0 y:0</span>
+  <span class="spacer"></span>
+  <span class="hbadge" id="ping-badge">⏱ –</span>
+  <span class="hbadge" id="audio-badge" style="cursor:pointer" onclick="toggleAudio()">🔇 Audio</span>
+</div>
+<div id="wrap">
+  <div id="screen-wrap" style="margin-top:36px">
+    <img id="s" alt="live screen" draggable="false">
+    <div id="overlay"></div>
+  </div>
+  <div id="toolbar">
+    <button class="tbtn" onclick="sendKey('esc')">Esc</button>
+    <button class="tbtn" onclick="sendKey('tab')">Tab</button>
+    <button class="tbtn" onclick="sendKey('enter')">Enter</button>
+    <button class="tbtn" onclick="sendKey('backspace')">⌫</button>
+    <button class="tbtn" onclick="sendKey('delete')">Del</button>
+    <button class="tbtn" onclick="sendKey('win')">⊞</button>
+    <button class="tbtn" onclick="sendCombo(['ctrl','alt','del'])">C+A+D</button>
+    <button class="tbtn" onclick="sendCombo(['alt','f4'])">Alt+F4</button>
+    <button class="tbtn" onclick="sendCombo(['ctrl','c'])">Ctrl+C</button>
+    <button class="tbtn" onclick="sendCombo(['ctrl','v'])">Ctrl+V</button>
+    <button class="tbtn" onclick="sendCombo(['ctrl','z'])">Ctrl+Z</button>
+    <button class="tbtn" onclick="sendCombo(['ctrl','a'])">Ctrl+A</button>
+    <button class="tbtn" id="scroll-lock-btn" onclick="toggleScrollDir()">↕ Scroll</button>
+    <input id="typebox" type="text" placeholder="Type here → Enter to send" onkeydown="typeboxKey(event)">
+    <button class="tbtn" onclick="sendTypebox()">Send</button>
+  </div>
+</div>
+<audio id="a" preload="none"></audio>
+<script>
+(function(){
+  var params = new URLSearchParams(window.location.search);
+  var key = params.get('key') || '';
+  var q   = params.get('q') || '75';
+  var fps = params.get('fps') || '20';
+
+  // Both video and audio on port 5001 (same origin)
+  var streamUrl = '/screen/stream?key=' + key + '&w=1920&q=' + q + '&fps=' + fps;
+  var audioUrl  = '/audio/stream?key=' + key + '&fmt=mp3';
+  // Command API on port 5000
+  var cmdBase   = window.location.protocol + '//' + window.location.hostname + ':5000';
+
+  var img = document.getElementById('s');
+  img.src = streamUrl;
+  var overlay = document.getElementById('overlay');
+
+  var SCREEN_W = 1920, SCREEN_H = 1080;
+  fetch(cmdBase + '/screen/info?key=' + key)
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if(d.sw){ SCREEN_W = d.sw; SCREEN_H = d.sh; } })
+    .catch(function(){});
+
+  function imgRect(){ return img.getBoundingClientRect(); }
+
+  function toScreen(cx, cy){
+    var r  = imgRect();
+    var px = (cx - r.left) / r.width;
+    var py = (cy - r.top)  / r.height;
+    return {
+      x: Math.round(Math.max(0, Math.min(1, px)) * (SCREEN_W - 1)),
+      y: Math.round(Math.max(0, Math.min(1, py)) * (SCREEN_H - 1))
+    };
+  }
+
+  function post(path, body){
+    var t0 = Date.now();
+    return fetch(cmdBase + path, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-Secret-Key': key},
+      body: JSON.stringify(body)
+    }).then(function(r){ return r.json(); }).then(function(d){
+      document.getElementById('ping-badge').textContent = '⏱ ' + (Date.now()-t0) + 'ms';
+      return d;
+    }).catch(function(){});
+  }
+
+  function moveTo(sx, sy){ return post('/input/mouse/move/abs', {x:sx, y:sy, key:key}); }
+  function sendKey(k){ return post('/input/keyboard/key', {value:k, key:key}); }
+  window.sendKey = sendKey;
+  function sendCombo(keys){ return post('/input/keyboard/combo', {keys:keys, key:key}); }
+  window.sendCombo = sendCombo;
+
+  var scrollDir = 1;
+
+  overlay.addEventListener('mousemove', function(e){
+    e.preventDefault();
+    var s = toScreen(e.clientX, e.clientY);
+    document.getElementById('pos-badge').textContent = 'x:' + s.x + ' y:' + s.y;
+    moveTo(s.x, s.y);
+  });
+
+  overlay.addEventListener('mousedown', function(e){
+    e.preventDefault();
+    var s = toScreen(e.clientX, e.clientY);
+    moveTo(s.x, s.y).then(function(){ post('/input/mouse/down', {button: e.button===2?'right':'left', key:key}); });
+  });
+
+  overlay.addEventListener('mouseup', function(e){
+    e.preventDefault();
+    post('/input/mouse/up', {button: e.button===2?'right':'left', key:key});
+  });
+
+  overlay.addEventListener('click', function(e){
+    e.preventDefault();
+    var s = toScreen(e.clientX, e.clientY);
+    moveTo(s.x, s.y).then(function(){ post('/input/mouse/click', {button: e.button===2?'right':'left', key:key}); });
+  });
+
+  overlay.addEventListener('dblclick', function(e){
+    e.preventDefault();
+    var s = toScreen(e.clientX, e.clientY);
+    moveTo(s.x, s.y).then(function(){ post('/input/mouse/click', {button:'left', double:true, key:key}); });
+  });
+
+  overlay.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+  overlay.addEventListener('wheel', function(e){
+    e.preventDefault();
+    var amount = e.deltaY > 0 ? -3 : 3;
+    post('/input/mouse/scroll', {amount:amount, horizontal:(scrollDir===-1), key:key});
+  }, {passive:false});
+
+  window.toggleScrollDir = function(){
+    scrollDir *= -1;
+    document.getElementById('scroll-lock-btn').textContent = scrollDir===1 ? '↕ Scroll' : '↔ Scroll';
+  };
+
+  var SPECIAL = {
+    'Escape':'esc','Tab':'tab','Enter':'enter','Backspace':'backspace',
+    'Delete':'delete','ArrowUp':'up','ArrowDown':'down','ArrowLeft':'left',
+    'ArrowRight':'right','Home':'home','End':'end','PageUp':'pgup','PageDown':'pgdn',
+    'F1':'f1','F2':'f2','F3':'f3','F4':'f4','F5':'f5','F6':'f6','F7':'f7','F8':'f8',
+    'F9':'f9','F10':'f10','F11':'f11','F12':'f12'
+  };
+
+  document.addEventListener('keydown', function(e){
+    if(document.activeElement === document.getElementById('typebox')) return;
+    e.preventDefault();
+    var mods = [];
+    if(e.ctrlKey) mods.push('ctrl');
+    if(e.altKey)  mods.push('alt');
+    if(e.shiftKey) mods.push('shift');
+    var mapped = SPECIAL[e.key];
+    if(mods.length){ mods.push(mapped||e.key.toLowerCase()); sendCombo(mods); }
+    else if(mapped) sendKey(mapped);
+    else if(e.key.length===1) post('/input/keyboard/type', {value:e.key, key:key});
+  });
+
+  window.typeboxKey = function(e){ if(e.key==='Enter'){ e.preventDefault(); sendTypebox(); } };
+  window.sendTypebox = function(){
+    var box = document.getElementById('typebox');
+    if(!box.value) return;
+    post('/input/keyboard/type', {value:box.value, key:key});
+    box.value = '';
+  };
+
+  /* Audio */
+  var audioEl=document.getElementById('a'), audioOn=false;
+  function toggleAudio(){
+    if(audioOn){ audioEl.pause();audioEl.src='';audioOn=false;document.getElementById('audio-badge').textContent='🔇 Audio'; }
+    else { audioEl.src=audioUrl+'&_r='+Date.now();audioEl.load();audioEl.play().catch(function(){});audioOn=true;document.getElementById('audio-badge').textContent='🔊 Audio ON'; }
+  }
+  window.toggleAudio = toggleAudio;
+
+  /* Video reconnect */
+  var lastLoad = Date.now();
+  img.onload = function(){ lastLoad=Date.now(); };
+  img.onerror = function(){ setTimeout(function(){ img.src=streamUrl+'&_r='+Date.now(); }, 2000); };
+  setInterval(function(){ if(Date.now()-lastLoad>15000){ img.src=streamUrl+'&_r='+Date.now();lastLoad=Date.now(); } }, 5000);
+})();
+</script>
+</body></html>

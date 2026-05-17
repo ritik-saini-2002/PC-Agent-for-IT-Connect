@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>PC Screen — Live</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:sans-serif;touch-action:none}
+  #s{width:100%;height:100%;object-fit:contain;display:block}
+  #hud{position:fixed;top:8px;left:50%;transform:translateX(-50%);
+       color:#0f0;font-size:11px;background:rgba(0,0,0,.6);
+       padding:3px 10px;border-radius:10px;pointer-events:none;white-space:nowrap}
+  #audio-btn{
+    position:fixed;bottom:16px;right:16px;
+    background:rgba(29,78,216,.92);color:#fff;
+    border:2px solid rgba(255,255,255,.25);border-radius:50px;
+    padding:10px 20px;cursor:pointer;font-size:15px;
+    backdrop-filter:blur(6px);box-shadow:0 4px 16px rgba(0,0,0,.4);
+    transition:background .2s;
+  }
+  #audio-btn:active{background:rgba(29,78,216,.7)}
+  #quality-badge{
+    position:fixed;top:8px;right:10px;
+    color:#aaa;font-size:10px;background:rgba(0,0,0,.5);
+    padding:2px 8px;border-radius:8px;pointer-events:none;
+  }
+</style>
+</head><body>
+
+<img id="s" alt="">
+<audio id="a" preload="none"></audio>
+<div id="hud">🔴 LIVE</div>
+<div id="quality-badge"></div>
+<button id="audio-btn" onclick="toggleAudio()">🔇 Tap for Audio</button>
+
+<script>
+(function(){
+  var params = new URLSearchParams(window.location.search);
+  var key = params.get('key') || '';
+  var q   = params.get('q')   || '75';
+  var w   = params.get('w')   || '1920';
+  var fps = params.get('fps') || '20';
+
+  var streamUrl = '/screen/stream?key=' + key + '&q=' + q + '&w=' + w + '&fps=' + fps;
+  var audioUrl  = '/audio/stream?key=' + key + '&fmt=mp3';
+
+  var img = document.getElementById('s');
+  img.src = streamUrl;
+
+  document.getElementById('hud').textContent =
+    '🔴 LIVE  |  ' + w + 'px  |  q' + q + '  |  ' + fps + 'fps';
+  document.getElementById('quality-badge').textContent = w + '×auto';
+
+  /* Video reconnect */
+  var lastLoad = Date.now();
+  img.onload  = function(){ lastLoad = Date.now(); };
+  img.onerror = function(){ setTimeout(function(){ img.src = streamUrl + '&_r=' + Date.now(); }, 2000); };
+  setInterval(function(){
+    if(Date.now() - lastLoad > 15000){ img.src = streamUrl + '&_r=' + Date.now(); lastLoad = Date.now(); }
+  }, 5000);
+
+  /* Audio */
+  var audioEl = document.getElementById('a');
+  var audioOn = false;
+  function toggleAudio(){
+    if(audioOn){
+      audioEl.pause(); audioEl.src='';
+      audioOn=false;
+      document.getElementById('audio-btn').textContent='🔇 Tap for Audio';
+    } else {
+      audioEl.src = audioUrl + '&_r=' + Date.now();
+      audioEl.load(); audioEl.play().catch(function(){});
+      audioOn=true;
+      document.getElementById('audio-btn').textContent='🔊 Audio ON';
+    }
+  }
+  window.toggleAudio = toggleAudio;
+
+  audioEl.addEventListener('ended',  function(){ if(audioOn) setTimeout(function(){ audioEl.src = audioUrl + '&_r=' + Date.now(); audioEl.load(); audioEl.play(); }, 1000); });
+  audioEl.addEventListener('error',  function(){ if(audioOn) setTimeout(function(){ audioEl.src = audioUrl + '&_r=' + Date.now(); audioEl.load(); audioEl.play(); }, 2000); });
+})();
+</script>
+</body></html>
