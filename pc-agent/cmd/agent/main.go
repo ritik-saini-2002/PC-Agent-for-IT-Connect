@@ -2,21 +2,67 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows/svc"
 	"github.com/ritik-saini/pc-agent/internal/capture"
 	"github.com/ritik-saini/pc-agent/internal/config"
 	"github.com/ritik-saini/pc-agent/internal/logger"
 	"github.com/ritik-saini/pc-agent/internal/server"
 )
 
+type agentService struct{}
+
+func (m *agentService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (ssec bool, errno uint32) {
+	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown
+	changes <- svc.Status{State: svc.StartPending}
+	
+	// Start the actual logic in background
+	ctx, cancel := context.WithCancel(context.Background())
+	go runAgentLogic(ctx)
+
+	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+loop:
+	for {
+		select {
+		case c := <-r:
+			switch c.Cmd {
+			case svc.Interrogate:
+				changes <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				cancel()
+				break loop
+			}
+		}
+	}
+	changes <- svc.Status{State: svc.StopPending}
+	return
+}
+
 func main() {
+	isInteractive, err := svc.IsAnInteractiveSession()
+	if err != nil {
+		isInteractive = true
+	}
+
+	if !isInteractive {
+		svc.Run("PCCommandAgent", &agentService{})
+		return
+	}
+
+	// Interactive mode (double clicked)
+	runAgentLogic(context.Background())
+}
+
+func runAgentLogic(ctx context.Context) {
 	// Determine agent directory
 	exe, _ := os.Executable()
 	agentDir := filepath.Dir(exe)
@@ -34,9 +80,12 @@ func main() {
 	// Get local IP
 	localIP := getLocalIP()
 
-	logger.Info("══════════════════════════════════════════════════════════════")
-	logger.Info("  PC Command Agent v12.0-go  [Single Binary — Zero Dependencies]")
-	logger.Info("══════════════════════════════════════════════════════════════")
+	// Auto-install: firewall and autorun
+	go autoSetup()
+
+	logger.Info("==============================================================")
+	logger.Info("  PC Command Agent v12.0-go  [Single Binary - Zero Dependencies]")
+	logger.Info("==============================================================")
 	logger.Info("  IP Address   : %s", localIP)
 	logger.Info("  Command Port : %d  (HTTP)", config.DefaultPort)
 	logger.Info("  Stream Port  : %d  (MJPEG + Audio)", config.DefaultStreamPort)
@@ -44,7 +93,7 @@ func main() {
 	logger.Info("  Master Key   : %s***", cfg.MasterKey[:4])
 	logger.Info("  Chunk Size   : %d MB", config.ChunkSize/1024/1024)
 	logger.Info("  Browser view : http://%s:%d/screen/viewer?key=%s", localIP, config.DefaultStreamPort, cfg.SecretKey)
-	logger.Info("══════════════════════════════════════════════════════════════")
+	logger.Info("==============================================================")
 
 	// Start background frame grabber
 	capture.StartGrabber()
@@ -104,16 +153,20 @@ func main() {
 	// Start keep-alive worker
 	go keepAliveWorker()
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal or context cancellation
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+
+	select {
+	case <-quit:
+	case <-ctx.Done():
+	}
 
 	logger.Info("Shutting down...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	apiServer.Shutdown(ctx)
-	streamServer.Shutdown(ctx)
+	apiServer.Shutdown(shutdownCtx)
+	streamServer.Shutdown(shutdownCtx)
 	logger.Info("Agent stopped.")
 }
 
@@ -144,4 +197,21 @@ func keepAliveWorker() {
 		logger.Info("[HEARTBEAT] Uptime: %ds  IP:%s  Connected: %d",
 			int(time.Since(time.Now()).Seconds()), getLocalIP(), server.GetConnTracker().Count())
 	}
+}
+
+func autoSetup() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+
+	// 1. Add to Windows Defender Firewall (runs silently, works if Admin)
+	exec.Command("netsh", "advfirewall", "firewall", "add", "rule", 
+		"name=PC Command Agent API", "dir=in", "action=allow", "protocol=TCP", "localport=5000").Run()
+	exec.Command("netsh", "advfirewall", "firewall", "add", "rule", 
+		"name=PC Command Agent Stream", "dir=in", "action=allow", "protocol=TCP", "localport=5001").Run()
+
+	// 2. Add to Registry for Autorun (Current User - works without Admin)
+	psCmd := fmt.Sprintf(`New-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "PCCommandAgent" -Value '"%s"' -PropertyType String -Force`, exe)
+	exec.Command("powershell", "-WindowStyle", "Hidden", "-Command", psCmd).Run()
 }

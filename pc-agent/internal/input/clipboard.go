@@ -34,7 +34,15 @@ func ReadClipboard() (string, error) {
 	defer syscall.NewLazyDLL("kernel32.dll").NewProc("GlobalUnlock").Call(h)
 
 	// Read UTF-16 string
-	text := syscall.UTF16ToString((*[1 << 20]uint16)(unsafe.Pointer(ptr))[:])
+	var u16 []uint16
+	for i := 0; ; i++ {
+		val := *(*uint16)(unsafe.Pointer(ptr + uintptr(i*2)))
+		if val == 0 {
+			break
+		}
+		u16 = append(u16, val)
+	}
+	text := syscall.UTF16ToString(u16)
 	return text, nil
 }
 
@@ -67,9 +75,9 @@ func WriteClipboard(text string) error {
 	}
 
 	// Copy UTF-16 data
-	src := unsafe.Pointer(&utf16[0])
-	dst := unsafe.Pointer(ptr)
-	copy((*[1 << 20]byte)(dst)[:size], (*[1 << 20]byte)(src)[:size])
+	for i := 0; i < size; i++ {
+		*(*byte)(unsafe.Pointer(ptr + uintptr(i))) = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&utf16[0])) + uintptr(i)))
+	}
 
 	syscall.NewLazyDLL("kernel32.dll").NewProc("GlobalUnlock").Call(hMem)
 

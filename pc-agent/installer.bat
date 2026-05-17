@@ -1,7 +1,8 @@
 @echo off
-echo ══════════════════════════════════════════════════
-echo   PC Command Agent — Installer
-echo ══════════════════════════════════════════════════
+cd /d "%~dp0"
+echo ==================================================
+echo   PC Command Agent - Installer
+echo ==================================================
 echo.
 
 :: Check admin
@@ -38,9 +39,9 @@ sc start PCCommandAgent
 echo [OK] Service started
 
 echo.
-echo ══════════════════════════════════════════════════
+echo ==================================================
 echo   Installation complete!
 echo   Service: PCCommandAgent (auto-start)
 echo   Ports:   5000 (API) + 5001 (Stream)
-echo ══════════════════════════════════════════════════
+echo ==================================================
 pause

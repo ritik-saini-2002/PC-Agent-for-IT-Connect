@@ -88,12 +88,57 @@ func handleAdminControl(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAudioStream(w http.ResponseWriter, r *http.Request) {
+	fmtParam := r.URL.Query().Get("fmt")
+	if fmtParam == "" {
+		fmtParam = "mp3"
+	}
+
 	w.Header().Set("Content-Type", "audio/mpeg")
+	if fmtParam == "pcm" {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Audio-Source", "wasapi-loopback")
-	// Audio WASAPI implementation will be added in Phase 5
-	// For now return empty to maintain API compatibility
-	<-r.Context().Done()
+	w.Header().Set("Transfer-Encoding", "chunked")
+
+	if !capture.IsAudioEnabled() {
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return
+	}
+
+	pcmChan := capture.SubscribeAudio()
+	defer capture.UnsubscribeAudio(pcmChan)
+
+	var streamChan <-chan []byte
+	if fmtParam == "mp3" {
+		var err error
+		streamChan, err = capture.ConvertToMP3(r.Context(), pcmChan)
+		if err != nil {
+			return // ffmpeg not found or failed, we just close the stream
+		}
+	} else {
+		streamChan = pcmChan
+	}
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case data, ok := <-streamChan:
+			if !ok {
+				return
+			}
+			_, err := w.Write(data)
+			if err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func handleAudioToggle(w http.ResponseWriter, r *http.Request) {
@@ -101,10 +146,17 @@ func handleAudioToggle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "POST required", 405)
 		return
 	}
-	// Placeholder — full WASAPI toggle in Phase 5
-	jsonOK(w, map[string]interface{}{"ok": true, "enabled": false})
+	
+	enabled := !capture.IsAudioEnabled()
+	capture.SetAudioEnabled(enabled)
+	
+	jsonOK(w, map[string]interface{}{"ok": true, "enabled": enabled})
 }
 
 func handleAudioStatus(w http.ResponseWriter, r *http.Request) {
-	jsonOK(w, map[string]interface{}{"ok": true, "enabled": false, "streaming_clients": 0})
+	jsonOK(w, map[string]interface{}{
+		"ok": true, 
+		"enabled": capture.IsAudioEnabled(), 
+		"streaming_clients": capture.GetAudioSubscribersCount(),
+	})
 }
